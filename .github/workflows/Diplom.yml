@@ -1,0 +1,78 @@
+name: Diplom
+
+on:
+  push:
+    branches: [ main ]
+
+jobs:
+  # Этап 1: CI/CD
+  stage_1_cicd:
+    name: "Stage 1: CI/CD"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Cloud Deployment
+        uses: appleboy/ssh-action@master
+        with:
+          host: ${{ secrets.SERVER_IP }}
+          username: root
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          script: |
+            docker pull bkimminich/juice-shop:latest
+            docker stop juice-shop || true
+            docker rm juice-shop || true
+            docker run -d --name juice-shop -p 80:3000 bkimminich/juice-shop:latest
+
+  # Этап 2: SAST
+  stage_2_sast:
+    name: "Stage 2: SAST"
+    needs: stage_1_cicd
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Semgrep Scan
+        run: docker run --rm -v $(pwd):/src returntocorp/semgrep semgrep --config=p/javascript --json -o sast-report.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sast-report
+          path: sast-report.json
+
+  # Этап 4: Security Checks
+  stage_4_security_checks:
+    name: "Stage 4: Security Checks"
+    needs: stage_1_cicd
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Gitleaks Scan
+        uses: gitleaks/gitleaks-action@v2
+      - name: Trivy Scan
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: 'image'
+          image-ref: 'bkimminich/juice-shop:latest'
+          severity: 'CRITICAL,HIGH'
+
+  # Этап 3: DAST
+  stage_3_dast:
+    name: "Stage 3: DAST"
+    needs: [stage_1_cicd, stage_4_security_checks]
+    runs-on: ubuntu-latest
+    steps:
+      - name: ZAP Scan
+        uses: zaproxy/action-baseline@v0.12.0
+        with:
+          target: "http://${{ secrets.SERVER_IP }}"
+          fail_action: false
+
+  # Этап 5: Security Gateway
+  stage_5_gateway:
+    name: "Stage 5: Security Gateway"
+    needs: [stage_2_sast, stage_3_dast, stage_4_security_checks]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Finalize
+        run: echo "DevSecOps Pipeline for Juice Shop completed."
